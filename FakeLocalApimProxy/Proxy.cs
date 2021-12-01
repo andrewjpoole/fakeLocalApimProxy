@@ -20,8 +20,10 @@ namespace FakeLocalApimProxy
             (bool matches, Redirection redirection) = MatchesRedirection(request);
             if (!matches)
             {
-                Console.WriteLine($"No Redirection found for request {request.ToRequstString()}");
-                await next.Invoke(context);
+                var message = $"No Redirection found for request {request.ToRequstString()}";
+                Console.WriteLine(message);
+                await context.Response.WriteAsync(message);
+                //context.Response.StatusCode = StatusCodes.Status500InternalServerError;
                 return;
             }
 
