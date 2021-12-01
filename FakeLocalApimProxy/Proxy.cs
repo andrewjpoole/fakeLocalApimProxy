@@ -4,11 +4,13 @@ namespace FakeLocalApimProxy
 {
     public class Proxy : IMiddleware
     {
+        private readonly IHttpClientFactory _httpClientFactory;
         private const string RedirectionSectionName = "Redirections";
-        private List<Redirection> _redirections = new();
+        private readonly List<Redirection> _redirections;
 
-        public Proxy(IConfiguration config)
+        public Proxy(IConfiguration config, IHttpClientFactory httpClientFactory)
         {
+            _httpClientFactory = httpClientFactory;
             _redirections = config.GetSection(RedirectionSectionName).Get<List<Redirection>>();
 
             Console.WriteLine($"Found {_redirections.Count} Redirections in config.");
@@ -16,59 +18,56 @@ namespace FakeLocalApimProxy
 
         public async Task InvokeAsync(HttpContext context, RequestDelegate next)
         {
-            var request = context.Request;
-            (bool matches, Redirection redirection) = MatchesRedirection(request);
-            if (!matches)
+            if (context.Request.Path == "/")
             {
-                var message = $"No Redirection found for request {request.ToRequstString()}";
-                Console.WriteLine(message);
-                await context.Response.WriteAsync(message);
-                //context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                await next.Invoke(context);
                 return;
             }
 
-            Console.WriteLine($"Forwarding request to {redirection.Uri}");
+            var request = context.Request;
+            var redirectedUri = RequestPathMatchesAConfiguredRedirection(request);
+            if (string.IsNullOrEmpty(redirectedUri))
+            {
+                var message = $"No Redirection found for request {request.ToRequstString()}";
+                Console.WriteLine(message);
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync(message);
+                await context.Response.CompleteAsync();
+                return;
+            }
 
-            var forwardedResponse = await ForwardRequest(request, redirection);
+            Console.WriteLine($"Forwarding request to {redirectedUri}");
+
+            var forwardedResponse = await ForwardRequest(request, redirectedUri);
+
+            Console.WriteLine(forwardedResponse.LogResponseHeaders());
 
             await CopyResponseMessageToResponse(forwardedResponse, context.Response);
             
-            Console.WriteLine("Returned forwarded response.");
-
-            return;
+            Console.WriteLine($"Returned forwarded response.");
         }
 
-        private (bool Matches, Redirection Redirection) MatchesRedirection(HttpRequest request)
+        private string RequestPathMatchesAConfiguredRedirection(HttpRequest request)
         {
             foreach (var redirection in _redirections)
             {
-                if (request.Path.StartsWithSegments(redirection.Match))
+                if (request.Path.StartsWithSegments(redirection.StartingSegment))
                 {
-                    return (true, redirection);
+                    return redirection.Uri;
                 }
             }
-            return (false, Redirection.Empty());
+            return string.Empty;
         }
 
-        private async Task<HttpResponseMessage> ForwardRequest(HttpRequest request, Redirection redirection)
+        private async Task<HttpResponseMessage> ForwardRequest(HttpRequest request, string redirectedUri)
         {
-            var requestToForward = DuplicateRequest(request, new Uri(redirection.Uri));
-            
-            var client = new HttpClient();
-            var forwardedResponse = await client.SendAsync(requestToForward);
+            var requestToForward = DuplicateRequest(request, new Uri(redirectedUri));
+
+            var httpClient = _httpClientFactory.CreateClient();
+            var forwardedResponse = await httpClient.SendAsync(requestToForward);
             return forwardedResponse;            
         }
-
-        private async Task CopyResponseMessageToResponse(HttpResponseMessage forwardedResponse, HttpResponse response)
-        {
-            foreach (var forwardedHeader in forwardedResponse.Headers)
-            {
-                response.Headers.Add(forwardedHeader.Key, new StringValues(forwardedHeader.Value.ToArray()));
-            }
-            //response.Body = forwardedResponse.Content.ReadAsStream();
-            await forwardedResponse.Content.CopyToAsync(response.Body, null, CancellationToken.None);
-        }
-
+        
         private HttpRequestMessage DuplicateRequest(HttpRequest request, Uri uri)
         {
             var requestMessage = new HttpRequestMessage();
@@ -82,11 +81,11 @@ namespace FakeLocalApimProxy
                 requestMessage.Content = streamContent;
             }
             
-            foreach (var header in request.Headers)
+            foreach (var (key, value) in request.Headers)
             {
-                if (!requestMessage.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray()) && requestMessage.Content != null)
+                if (!requestMessage.Headers.TryAddWithoutValidation(key, value.ToArray()) && requestMessage.Content != null)
                 {
-                    requestMessage.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
+                    requestMessage.Content?.Headers.TryAddWithoutValidation(key, value.ToArray());
                 }
             }
 
@@ -95,6 +94,17 @@ namespace FakeLocalApimProxy
             requestMessage.Method = new HttpMethod(request.Method);
 
             return requestMessage;
-        }        
+        }
+
+        private async Task CopyResponseMessageToResponse(HttpResponseMessage forwardedResponse, HttpResponse response)
+        {
+            response.StatusCode = (int)forwardedResponse.StatusCode;
+            foreach (var (key, value) in forwardedResponse.Headers)
+            {
+                response.Headers.Add(key, new StringValues(value.ToArray()));
+            }
+            await forwardedResponse.Content.CopyToAsync(response.Body, null, CancellationToken.None);
+            await response.CompleteAsync();
+        }
     }
 }
