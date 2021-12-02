@@ -9,14 +9,22 @@ namespace FakeLocalApimProxy
             return $"{request.Scheme}://{request.Host}{request.Path}{request.QueryString.Value}";
         }
 
-        public static string LogResponseHeaders(this HttpResponseMessage response)
+        public static string LogResponse(this HttpResponseMessage response)
         {
-            var headers = new StringBuilder("headers:");
+            var logOutput = new StringBuilder();
+            logOutput.AppendLine($"statusCode:");
+            logOutput.AppendLine($"   {(int)response.StatusCode} {response.StatusCode}");
+            logOutput.AppendLine("headers:");
             foreach (var (key, value) in response.Headers)
             {
-                headers.AppendLine($"{key}:{string.Join(",", value)}");
+                logOutput.AppendLine($"   {key}:{string.Join(",", value)}");
             }
-            return headers.ToString();
+
+            logOutput.AppendLine("body:");
+            logOutput.AppendLine($"   {response.Content.ReadAsStringAsync().Result}");
+            
+
+            return logOutput.ToString();
         }
     }
 }

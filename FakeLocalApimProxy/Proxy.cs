@@ -6,6 +6,7 @@ namespace FakeLocalApimProxy
     {
         private readonly IHttpClientFactory _httpClientFactory;
         private const string RedirectionSectionName = "Redirections";
+        private const string Line = "------------------------------------------------------";
         private readonly List<Redirection> _redirections;
 
         public Proxy(IConfiguration config, IHttpClientFactory httpClientFactory)
@@ -13,7 +14,7 @@ namespace FakeLocalApimProxy
             _httpClientFactory = httpClientFactory;
             _redirections = config.GetSection(RedirectionSectionName).Get<List<Redirection>>();
 
-            Console.WriteLine($"Found {_redirections.Count} Redirections in config.");
+            Console.WriteLine($"Found {_redirections.Count} Redirections in config.\n\n");
         }
 
         public async Task InvokeAsync(HttpContext context, RequestDelegate next)
@@ -29,6 +30,7 @@ namespace FakeLocalApimProxy
             if (string.IsNullOrEmpty(redirectedUri))
             {
                 var message = $"No Redirection found for request {request.ToRequstString()}";
+                Console.WriteLine(Line);
                 Console.WriteLine(message);
                 context.Response.StatusCode = StatusCodes.Status400BadRequest;
                 await context.Response.WriteAsync(message);
@@ -36,15 +38,16 @@ namespace FakeLocalApimProxy
                 return;
             }
 
+            Console.WriteLine(Line);
             Console.WriteLine($"Forwarding request to {redirectedUri}");
 
             var forwardedResponse = await ForwardRequest(request, redirectedUri);
-
-            Console.WriteLine(forwardedResponse.LogResponseHeaders());
+            
+            Console.Write(forwardedResponse.LogResponse());
 
             await CopyResponseMessageToResponse(forwardedResponse, context.Response);
             
-            Console.WriteLine($"Returned forwarded response.");
+            Console.WriteLine("Returned forwarded response.\n");
         }
 
         private string RequestPathMatchesAConfiguredRedirection(HttpRequest request)
@@ -65,6 +68,7 @@ namespace FakeLocalApimProxy
 
             var httpClient = _httpClientFactory.CreateClient();
             var forwardedResponse = await httpClient.SendAsync(requestToForward);
+            await forwardedResponse.Content.LoadIntoBufferAsync(); // enable multiple reads of the body so we can log it
             return forwardedResponse;            
         }
         
